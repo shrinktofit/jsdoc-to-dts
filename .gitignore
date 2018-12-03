@@ -1,0 +1,5 @@
+/node_modules
+/.vscode/launch.json
+/out
+/destination
+/package-lock.json
