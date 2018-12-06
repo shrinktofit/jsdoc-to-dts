@@ -1,13 +1,24 @@
-import { Emitter } from './emitter';
+import { Emitter, EmitterOtions } from './emitter';
 import * as yargs from 'yargs';
-import { writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import mkdirp = require('mkdirp');
 
-yargs.alias('d', 'destination').describe('d', 'output path');
+yargs
+    .option('destination', {
+        type: 'string',
+        alias: 'd',
+        desc: 'output path'
+    })
+    .option('excludes', {
+        type: 'array',
+        alias: 'e',
+        desc: 'path patterns to exclude',
+        array: true
+    });
 
-const inputs = yargs.argv._;
-const emitter = new Emitter(inputs);
+const options: EmitterOtions = {
+    inputs: yargs.argv._,
+    outputDir: yargs.argv['destination'],
+    excludes: yargs.argv['excludes'],
+};
 
-const outputDir = yargs.argv['destination'];
-emitter.emit(outputDir);
+const emitter = new Emitter(options);
+emitter.emit();
