@@ -81,7 +81,8 @@ export class Emitter {
             throw new Error(`Cannot find main source file ${_options.inputs[0]}.`);
         }
 
-        const moduleSymbols = this._typeChecker.getExportsOfModule(this._typeChecker.getSymbolAtLocation(mainSourceFile)!);
+        //const moduleSymbols = this._typeChecker.getExportsOfModule(this._typeChecker.getSymbolAtLocation(mainSourceFile)!);
+        const moduleSymbols = this._typeChecker.getSymbolsInScope(mainSourceFile, ts.SymbolFlags.Module);
         moduleSymbols.forEach(moduleSymbol => {
             if (moduleSymbol.name === 'cc') {
                 this._getSymbolInfo(moduleSymbol);
@@ -165,6 +166,7 @@ export class Emitter {
             const rightSymbols: ts.Symbol[] = [];
             this._getSymbolOfExpr(declaration.right, ts.SymbolFlags.Class | ts.SymbolFlags.Function | ts.SymbolFlags.Interface | ts.SymbolFlags.Namespace, rightSymbols);
             for (const rightSymbol of rightSymbols) {
+                const ss = this._typeChecker.getAliasedSymbol(rightSymbol);
                 const rightSymbolInfo = this._getSymbolInfo(rightSymbol);
                 add(rightSymbolInfo);
             }
