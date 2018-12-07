@@ -120,189 +120,137 @@ export class Emitter {
     private _getSymbolInfo(symbol: ts.Symbol) {
         let symbolInfo = this._symbols.get(symbol);
         if (symbolInfo === undefined) {
-            symbolInfo = this._resolveSymbol(symbol, (result) => {
-                symbolInfo = result;
-                this._symbols.set(symbol, result);
-            });
+            symbolInfo = this._resolveSymbol(symbol);
             this._symbols.set(symbol, symbolInfo);
+
+            if (symbolInfo && symbolInfo.resolved) {
+                // Resolves members
+                if (symbol.members) {
+                    const namespaceOrClassDecl = symbolInfo!.dtsDeclaration;
+                    symbol.members.forEach((memberSymbol) => {
+                        const memberSymbolInfo = this._getSymbolInfo(memberSymbol);
+                        if (memberSymbolInfo.resolved) {
+                            if (isDtsNamespaceDeclaration(namespaceOrClassDecl)) {
+                                namespaceOrClassDecl.members.push(memberSymbolInfo.dtsDeclaration);
+                            } else if (isDtsClassDeclaration(namespaceOrClassDecl)) {
+                                namespaceOrClassDecl.members.push(memberSymbolInfo.dtsDeclaration);
+                            }
+                        }
+                    });
+                }
+
+                // Resolves exports
+                if (isDtsNamespaceDeclaration(symbolInfo.dtsDeclaration) && testSymbolFlags(symbol.flags, ts.SymbolFlags.Module)) {
+                    const namespaceDecl = symbolInfo.dtsDeclaration;
+                    if (!isDtsNamespaceDeclaration(namespaceDecl)) {
+                        throw new Error(`${symbol.name} has exports, but it isn't a namespace.`);
+                    }
+                    let namespaceSymbol = symbol;
+                    if (testSymbolFlags(symbol.flags, ts.SymbolFlags.Alias)) {
+                        namespaceSymbol = this._typeChecker.getAliasedSymbol(namespaceSymbol);
+                    }
+                    const exportSymbols = this._typeChecker.getExportsOfModule(namespaceSymbol);
+                    exportSymbols.forEach(exportSymbol => {
+                        const exportSymbolInfo = this._getSymbolInfo(exportSymbol);
+                        if (exportSymbolInfo.resolved) {
+                            namespaceDecl.members.push(exportSymbolInfo.dtsDeclaration);
+                        }
+                    });
+                }
+            }
         }
         return symbolInfo;
     }
 
-    private _resolveSymbol(symbol: ts.Symbol, add: (result: SymbolInfo) => void): SymbolInfo {
+    private _resolveSymbol(symbol: ts.Symbol): SymbolInfo {
+        const declaration = symbol.valueDeclaration || symbol.declarations[0];
+
+        console.log(`Resolving symbol ${symbol.name}, ` +
+            `flags: ${symbolFlagToString(symbol.flags)}, ` +
+            `ast: ${declaration.getText().substr(0, 10)}`);
+
         const symbolFlags = symbol.getFlags();
-        if (symbolFlags & ts.SymbolFlags.Class) {
-            if (symbol.valueDeclaration) {
-                const classDecl = this._makeClassDeclaration(symbol.valueDeclaration as ts.ClassDeclaration);
-                if (classDecl) {
-                    add(new SymbolInfo(classDecl));
-                }
-            }
-        } else if (symbolFlags & ts.SymbolFlags.Function) {
-            if (symbol.valueDeclaration) {
-                const funcDecl = symbol.valueDeclaration as ts.FunctionDeclaration;
-                if (funcDecl.name) {
-                    const func = dtsdom.create.function(funcDecl.name.getText(), this._makeDTSParams(funcDecl), this._makeDTSReturnType(funcDecl));
-                    add(new SymbolInfo(func));
-                }
-            }
-        } else if (symbolFlags & ts.SymbolFlags.Namespace) {
+
+        // if (symbol.name === 'Mesh') {
+        //     debugger;
+        // }
+
+        if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Class)) {
+            return this._resolveClassSymbol(symbol);
+        }
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Function)) {
+            return this._resolveFunctionSymbol(symbol);
+        }
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Namespace)) {
             const dtsNamespace = dtsdom.create.namespace(ts.symbolName(symbol));
-            add(new SymbolInfo(dtsNamespace));
-            const x = this._typeChecker.getExportsOfModule(symbol);
-            if (x) {
-                x.forEach((y) => {
-                    const sym = this._resolveSymbol(y, add);
-                    if (sym.resolved) {
-                        dtsNamespace.members.push(sym.dtsDeclaration);
-                    }
-                });
+            if (ts.isSourceFile(symbol.valueDeclaration || symbol.declarations[0])) {
+                //debugger;
             }
-        } else if (symbolFlags & ts.SymbolFlags.Module) {
-            debugger;
-        } else if (symbolFlags & (ts.SymbolFlags.Property | ts.SymbolFlags.Assignment)) {
-            const declaration = symbol.valueDeclaration.parent as ts.BinaryExpression;
-            console.log(declaration.getText());
-            const rightSymbols: ts.Symbol[] = [];
-            this._getSymbolOfExpr(declaration.right, ts.SymbolFlags.Class | ts.SymbolFlags.Function | ts.SymbolFlags.Interface | ts.SymbolFlags.Namespace, rightSymbols);
-            for (const rightSymbol of rightSymbols) {
-                const ss = this._typeChecker.getAliasedSymbol(rightSymbol);
-                const rightSymbolInfo = this._getSymbolInfo(rightSymbol);
-                add(rightSymbolInfo);
-            }
-        } else if (symbolFlags & ts.SymbolFlags.Alias) {
-            debugger;
-        } else {
-            const s = symbolFlagToString(symbol.flags);
-            console.error(s);
+            return new SymbolInfo(dtsNamespace);
+        }
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Module)) {
             debugger;
         }
-        add(new SymbolInfo());
-    }
 
-    private _getSymbolOfExpr(expr: ts.Node, meaning: ts.SymbolFlags, result: ts.Symbol[]) {
-        if (ts.isObjectLiteralExpression(expr)) {
-            expr.properties.forEach(property => {
-                if (property.name) {
-                    this._getSymbolOfExpr(property.name, meaning, result);
-                }
-            });
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Constructor)) {
+            return this._resolveConstructorSymbol(symbol);
+        }                                                                                                                                                                                                         
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Property)) {
+            return this._resolvePropertySymbol(symbol);
         }
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Method)) {
+            return this._resolveMethodSymbol(symbol);                                                                                                                                                                 
+        }
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Accessor)) {
+            // Accessor symbol
+            let isReadOnly = true;
+            if (testSymbolFlags(symbolFlags, ts.SymbolFlags.SetAccessor)) {
+                isReadOnly = false;
+            }
+            if (!((symbol as any).parent & ts.SymbolFlags.Class)) {
+                //debugger;
+            }
+            return new SymbolInfo(this._makeDTSAccessor(symbol, symbol.valueDeclaration as ts.AccessorDeclaration, !isReadOnly));
+        }
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.Alias)) {
+            const originalSymbol = this._typeChecker.getAliasedSymbol(symbol);
+            if (symbol.name === '_decorator') {
+                //debugger;
+            }
+            return this._getSymbolInfo(originalSymbol);
+        }
+        
+        else if (symbolFlags & ts.SymbolFlags.Prototype) {
+
+        }
+        
+        else if (testSymbolFlags(symbolFlags, ts.SymbolFlags.BlockScopedVariable) ||
+            testSymbolFlags(symbolFlags, ts.SymbolFlags.FunctionScopedVariable)) {
+            // Block scoped variables and function scoped variables are ignored
+        }
+        
         else {
-            const symbol = this._typeChecker.getSymbolAtLocation(expr);
-            if (symbol) {
-                result.push(symbol);
-            }
+            const decl = symbol.valueDeclaration || symbol.declarations[0];
+            console.error(`Unprocessed symbol with flags: ${symbolFlagToString(symbol.flags)}, node: ${decl.getText()}(kind: ${syntaxKindToString(decl.kind)})`);
+            debugger;
         }
+        return new SymbolInfo();
     }
 
-    private _processSourceFile(sourceFile: ts.SourceFile, relativePath: string) {
-        //console.log(`Processing ${sourceFile.fileName}`);
-        //this._processNode(sourceFile);
-    }
-
-    private _processNode(astNode: ts.Node) {
-        if (ts.isClassDeclaration(astNode)) {
-            if (astNode.name) {
-                const symbol = this._typeChecker.getSymbolAtLocation(astNode.name);
-                if (symbol) {
-                    this._getSymbolInfo(symbol);
-                }
-            }
-        } else if (ts.isFunctionDeclaration(astNode)) {
-            if (astNode.name) {
-                const symbol = this._typeChecker.getSymbolAtLocation(astNode.name);
-                if (symbol) {
-                    this._getSymbolInfo(symbol);
-                }
-            }
-        } else if (ts.isBinaryExpression(astNode) && astNode.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-           if (this._isNamespaceAssignment(astNode)) {
-               //console.log(`Found namespace assigment ${astNode.getText()}`);
-           }
-        } else {
-            astNode.getChildren().forEach((childNode) => {
-                this._processNode(childNode);
-            });
-        }
-    }
-
-    private _isNamespaceAssignment(astNode: ts.BinaryExpression) {
-        const rightSymbol = this._typeChecker.getSymbolAtLocation(astNode.right);
-        if (!rightSymbol) {
-            return false;
+    private _resolveClassSymbol(symbol: ts.Symbol) {
+        const astNode = symbol.valueDeclaration;
+        if (!astNode || !ts.isClassDeclaration(astNode)) {
+            return new SymbolInfo();
         }
 
-        if (rightSymbol.valueDeclaration) {
-            if (!ts.isClassDeclaration(rightSymbol.valueDeclaration) &&
-                !ts.isFunctionDeclaration(rightSymbol.valueDeclaration)) {
-                return false;
-            }
-        }
-        else if (rightSymbol.declarations.length === 0) {
-            return false;
-        } else {
-            const d = rightSymbol.declarations[0];
-            if (!ts.isNamespaceImport(d)) {
-                return false;
-            } else {
-                const s = this._typeChecker.getSymbolAtLocation(d.getSourceFile());
-                const exportss = this._typeChecker.getExportsOfModule(s!);
-                const exports = this._typeChecker.getExportSymbolOfSymbol(rightSymbol);
-            }
-        }
-
-        const left = astNode.left;
-        let p: ts.Expression = left;
-        while (true) {
-            if (ts.isIdentifier(p)) {
-                return true;
-            } else if (ts.isPropertyAccessExpression(p)) {
-                p = p.expression;
-            } else {
-                return false;
-            }
-        }
-    }
-
-    private _makeClassDeclaration(astNode: ts.ClassDeclaration) {
-        if (!astNode.name) {
-            return null;
-        }
-
-        const dtsClassDecl = dtsdom.create.class(astNode.name.text);
-
-        const processedAccessors = new Set<string>();
-        for (const member of astNode.members) {
-            if (ts.isMethodDeclaration(member)) {
-                const method = dtsdom.create.method(member.name.getText(), this._makeDTSParams(member), this._makeDTSReturnType(member));
-                dtsClassDecl.members.push(method);
-            } else if (ts.isPropertyDeclaration(member)) {
-                const property = dtsdom.create.property(member.name.getText(), this._tryResolveTypeTag(member));
-                dtsClassDecl.members.push(property);
-            } else if (ts.isAccessor(member)) {
-                const name = member.name.getText();
-                if (!processedAccessors.has(name)) {
-                    processedAccessors.add(name);
-                    let hasSetter = false;
-                    if (ts.isSetAccessor(member)) {
-                        hasSetter = true;
-                    } else {
-                        astNode.members.forEach((member) => {
-                            if (ts.isSetAccessor(member) && member.name.getText() === name) {
-                                hasSetter = true;
-                            }
-                        });
-                    }
-                    let flags: dtsdom.DeclarationFlags = 0;
-                    if (!hasSetter) {
-                        flags |= dtsdom.DeclarationFlags.ReadOnly;
-                    }
-                    const property = dtsdom.create.property(member.name.getText(), this._tryResolveTypeTag(member), flags);
-                    dtsClassDecl.members.push(property);
-                }
-            }
-        }
+        const dtsClassDecl = dtsdom.create.class(symbol.name);
 
         if (astNode.heritageClauses) {
             astNode.heritageClauses.forEach((heritage) => {
@@ -310,7 +258,163 @@ export class Emitter {
             });
         }
 
-        return dtsClassDecl;
+        return new SymbolInfo(dtsClassDecl);
+    }
+
+    private _resolveConstructorSymbol(symbol: ts.Symbol) {
+        const astNode = symbol.valueDeclaration;
+        if (!astNode || !ts.isConstructorDeclaration(astNode)) {
+            return new SymbolInfo();
+        }
+
+        const dtsCtorDecl = dtsdom.create.constructor(
+            this._makeDTSParams(astNode)
+        );
+
+        return new SymbolInfo(dtsCtorDecl);
+    }
+
+    private _resolveFunctionSymbol(symbol: ts.Symbol) {
+        const astNode = symbol.valueDeclaration;
+        if (!astNode || !ts.isFunctionDeclaration(astNode)) {
+            return new SymbolInfo();
+        }
+
+        const func = dtsdom.create.function(symbol.name, this._makeDTSParams(astNode), this._makeDTSReturnType(astNode));
+        return new SymbolInfo(func);
+    }
+
+    private _resolvePropertySymbol(symbol: ts.Symbol) {
+        const astNode = symbol.valueDeclaration;
+        if (!astNode) {
+            return new SymbolInfo();
+        }
+
+        if (ts.isPropertyDeclaration(astNode)) {
+            const property = this._createDTSMember(symbol, this._tryResolveTypeTag(astNode));
+            return new SymbolInfo(property);
+        }
+
+        else if (testSymbolFlags(symbol.flags, ts.SymbolFlags.Assignment)) {
+            console.log(`Processing property symbol ${astNode.getText()}(with kind ${syntaxKindToString(astNode.kind)})`);
+            if (ts.isBinaryExpression(astNode.parent)) {
+                return this._getAssignmentExprSymbol(symbol, astNode.parent.right);
+            }
+        }
+        
+        else if (ts.isPropertyAssignment(astNode)) {
+
+        }
+        
+        else if (ts.isPropertySignature(astNode)) {
+
+        }
+        
+        else if (ts.isExportAssignment(astNode)) {
+
+        }
+        
+        else if (ts.isShorthandPropertyAssignment(astNode)) {
+            const valueSymbol = this._typeChecker.getShorthandAssignmentValueSymbol(symbol.valueDeclaration);
+            if (valueSymbol) {
+                return this._getSymbolInfo(valueSymbol);
+            }
+        }
+        
+        else {
+            console.error(`Cannot resolve property from ${astNode.getText()} ` +
+                `(with kind ${syntaxKindToString(astNode.kind)}, flags: ${symbolFlagToString(symbol.flags)}).`);
+        }
+
+        return new SymbolInfo();
+    }
+
+    /**
+     * Creates class member or namespace member.
+     * @param symbol 
+     * @param type 
+     */
+    private _createDTSMember(symbol: ts.Symbol, type: dtsdom.Type) {
+        const parent = (symbol as any).parent as ts.Symbol;
+        if (!parent) {
+            throw new Error(`Member should have parent`);
+        }
+        if (testSymbolFlags(parent.flags, ts.SymbolFlags.Class) ||
+            testSymbolFlags(parent.flags, ts.SymbolFlags.ObjectLiteral)) {
+            return dtsdom.create.property(symbol.name, type);
+        } else if (testSymbolFlags(parent.flags, ts.SymbolFlags.Namespace)) {
+            return dtsdom.create.variable(symbol.name, type);
+        } else {
+            throw new Error(`Unknown parent kind ${symbolFlagToString(parent.flags)}.`);
+        }
+    }
+
+    private _getAssignmentExprSymbol(symbol: ts.Symbol, valueExpr: ts.Expression) {
+        if (ts.isObjectLiteralExpression(valueExpr)) {
+            const namespaceDecl = dtsdom.create.namespace(symbol.name);
+            valueExpr.properties.forEach(property => {
+                if (property.name) {
+                    const memberSymbol = this._typeChecker.getSymbolAtLocation(property.name);
+                    if (memberSymbol) {
+                        const member = this._getSymbolInfo(memberSymbol);
+                        if (member.resolved) {
+                            namespaceDecl.members.push(member.dtsDeclaration);
+                        }
+                    }
+                }
+            });
+            return new SymbolInfo(namespaceDecl);
+        } else {
+            const memberSymbol = this._typeChecker.getSymbolAtLocation(valueExpr);
+            if (memberSymbol) {
+                return this._getSymbolInfo(memberSymbol);
+            }
+        }
+        return new SymbolInfo();
+    }
+
+    private _resolveMethodSymbol(symbol: ts.Symbol) {
+        const astNode = symbol.valueDeclaration;
+        if (!astNode) {
+            return new SymbolInfo();
+        }
+
+        if (ts.isMethodDeclaration(astNode)) {
+            const method = dtsdom.create.method(symbol.name, this._makeDTSParams(astNode), this._makeDTSReturnType(astNode));
+            return new SymbolInfo(method);
+        }
+
+        else if (ts.isMethodSignature(astNode)) {
+            const method = dtsdom.create.method(symbol.name, this._makeDTSParams(astNode), this._makeDTSReturnType(astNode));
+            return new SymbolInfo(method);
+        }
+
+        else if (ts.isPropertyAccessExpression(astNode)) {
+            const functionExpression = (astNode.parent as ts.BinaryExpression).right as ts.FunctionExpression;
+            const method = dtsdom.create.method(symbol.name, this._makeDTSParams(functionExpression), this._makeDTSReturnType(functionExpression));
+            return new SymbolInfo(method);
+        }
+
+        else {
+            console.error(`Cannot resolve method from ${astNode.getText()} ` +
+                `(with kind ${syntaxKindToString(astNode.kind)}, flags: ${symbolFlagToString(symbol.flags)}).`);
+            debugger;
+        }
+        
+        return new SymbolInfo();
+    }
+
+    private _processSourceFile(sourceFile: ts.SourceFile, relativePath: string) {
+        //console.log(`Processing ${sourceFile.fileName}`);
+        //this._processNode(sourceFile);
+    }
+
+    private _makeDTSAccessor(symbol: ts.Symbol, astNode: ts.AccessorDeclaration, hasSetter: boolean) {
+        let flags: dtsdom.DeclarationFlags = 0;
+        if (!hasSetter) {
+            flags |= dtsdom.DeclarationFlags.ReadOnly;
+        }
+        return this._createDTSMember(symbol, this._tryResolveTypeTag(astNode), flags);
     }
 
     private _resolveDTSHeritage(dtsClassDecl: dtsdom.ClassDeclaration, heritage: ts.HeritageClause) {
@@ -329,13 +433,15 @@ export class Emitter {
                 if (isDtsClassDeclaration(symbolInfo.dtsDeclaration)) {
                     dtsClassDecl.baseType = symbolInfo.dtsDeclaration;
                 } else {
-                    console.error(`${dtsClassDecl.name}'s hieritage ${heritage.getText()} shall be resolved to a class, but it's a ${symbolInfo.dtsDeclaration.kind}.`);
+                    console.error(`${dtsClassDecl.name}'s hieritage ` +
+                        `${heritage.getText()} shall be resolved to a class, but it's a ${getDtsDeclarationKind(symbolInfo.dtsDeclaration)}.`);
                 }
             } else {
                 if (isDtsInterfaceDeclaration(symbolInfo.dtsDeclaration)) {
                     dtsClassDecl.baseType = symbolInfo.dtsDeclaration;
                 } else {
-                    console.error(`${dtsClassDecl.name}'s hieritage ${heritage.getText()} shall be resolved to an interface, but it's a ${symbolInfo.dtsDeclaration.kind}.`);
+                    console.error(`${dtsClassDecl.name}'s hieritage ` +
+                        `${heritage.getText()} shall be resolved to an interface, but it's a ${getDtsDeclarationKind(symbolInfo.dtsDeclaration)}.`);
                 }
             }
         });
@@ -361,7 +467,7 @@ export class Emitter {
         return returnType;
     }
 
-    private _makeDTSParams(astNode: ts.MethodDeclaration | ts.FunctionDeclaration) {
+    private _makeDTSParams(astNode: ts.MethodDeclaration | ts.FunctionDeclaration | ts.ConstructorDeclaration | ts.FunctionExpression | ts.MethodSignature) {
         const paramTags = ts.getAllJSDocTagsOfKind(astNode, ts.SyntaxKind.JSDocParameterTag) as ts.JSDocParameterTag[];
         return astNode.parameters.map((param) => {
             const paramName = param.name.getText();
@@ -376,7 +482,7 @@ export class Emitter {
         });
     }
 
-    private _tryResolveTypeTag(astNode: ts.AccessorDeclaration | ts.PropertyDeclaration) {
+    private _tryResolveTypeTag(astNode: ts.AccessorDeclaration | ts.PropertyDeclaration | ts.FunctionExpression | ts.MethodSignature) {
         const tags = ts.getAllJSDocTagsOfKind(astNode, ts.SyntaxKind.JSDocTypeTag);
         if (tags.length !== 0) {
             const typeTag = tags[0] as ts.JSDocTypeTag;
@@ -509,11 +615,15 @@ function iterateOverDirectory(rootPath: string, fx: (path: string) => void) {
 }
 
 function isDtsClassDeclaration(declaration: dtsdom.DeclarationBase): declaration is dtsdom.ClassDeclaration {
-    return (declaration as any).kind === 'class';
+    return getDtsDeclarationKind(declaration) === 'class';
 }
 
 function isDtsInterfaceDeclaration(declaration: dtsdom.DeclarationBase): declaration is dtsdom.InterfaceDeclaration {
-    return (declaration as any).kind === 'interface';
+    return getDtsDeclarationKind(declaration) === 'interface';
+}
+
+function isDtsNamespaceDeclaration(declaration: dtsdom.DeclarationBase): declaration is dtsdom.NamespaceDeclaration {
+    return getDtsDeclarationKind(declaration) === 'namespace';
 }
 
 function isDtsTopLevelDeclaration(declaration: dtsdom.DeclarationBase): declaration is dtsdom.TopLevelDeclaration {
@@ -521,21 +631,30 @@ function isDtsTopLevelDeclaration(declaration: dtsdom.DeclarationBase): declarat
     (declaration as any).kind !== 'method';
 }
 
+function getDtsDeclarationKind(declaration: dtsdom.DeclarationBase): string | undefined {
+    return (declaration as any).kind;
+}
+
 function syntaxKindToString(syntaxKind: ts.SyntaxKind) {
     const keys = Object.keys(ts.SyntaxKind).filter((key) => (ts.SyntaxKind as any)[key] === syntaxKind);
     return keys.join(' or ');
 }
 
+function testSymbolFlags(test: ts.SymbolFlags, symbolFlags: ts.SymbolFlags) {
+    return (test & symbolFlags);
+}
+
 function symbolFlagToString(symbolFlag: ts.SymbolFlags) {
     const keys = Object.keys(ts.SymbolFlags).filter((key) => {
-        const flg = (ts.SymbolFlags as any)[key];
-        if (flg === 0) {
-            return false;
-        }
-        if ((flg & symbolFlag) === flg) {
-            return true;
+        const flg = (ts.SymbolFlags as any)[key] as number;
+        if (oneBitIsSet(flg)) {
+            return (flg & symbolFlag) !== 0;
         }
         return false;
     });
-    return keys.join(' and ');
+    return keys.join(', ');
+}
+
+function oneBitIsSet(n: number) {
+    return n !== 0 && (n & (n - 1)) === 0;
 }
