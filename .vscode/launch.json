@@ -20,6 +20,8 @@
 				".*cocos[/\\\\]2d[/\\\\].*",
 				"--excludes",
 				".*\\.json",
+				"--source-root",
+				"E:/Repos/engine",
                 "--destination",
 				"./out",
 				"E:/Repos/engine/index.js"
